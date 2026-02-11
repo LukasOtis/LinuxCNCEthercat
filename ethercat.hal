@@ -1,0 +1,158 @@
+# ============================================================================
+# EtherCAT starter HAL 
+#
+# Beckhoff chain (names from your ethercat-conf.xml):
+#   ek1100, di8 (EL1008), do8 (EL2008), relay4 (EL2624), ai2 (EL3102), ao2 (EL4022)
+# Drive (name from your ethercat-conf.xml):
+#   A6 (StepperOnline A6 / AS715N)
+#
+# Goals:
+#   1) Bring up EtherCAT inside LinuxCNC (lcec.read-all/write-all in servo-thread)
+#   2) Expose Beckhoff IO pins as simple named nets for Halshow/Halscope
+#   3) Wire one joint (joint.0) to one drive (A6) via cia402.comp in CSP mode
+#
+# Safety defaults:
+#   - All EL2008/EL2624 outputs forced low at startup
+#   - EL4022 (4-20mA) outputs left disabled by default
+#
+# ============================================================================
+
+
+# -----------------------------
+# Motion core
+# -----------------------------
+loadrt [KINS]KINEMATICS
+loadrt [EMCMOT]EMCMOT servo_period_nsec=[EMCMOT]SERVO_PERIOD num_joints=[KINS]JOINTS
+
+# -----------------------------
+# EtherCAT + CiA402
+# -----------------------------
+loadusr -W lcec_conf ethercat-conf.xml
+loadrt lcec
+loadrt cia402 count=1
+
+# Servo-thread scheduling (order matters)
+addf lcec.read-all            servo-thread
+addf cia402.0.read-all        servo-thread
+addf motion-command-handler   servo-thread
+addf motion-controller        servo-thread
+addf cia402.0.write-all       servo-thread
+addf lcec.write-all           servo-thread
+
+# Allow LinuxCNC to enable (iocontrol)
+setp iocontrol.0.emc-enable-in 1
+
+
+# ============================================================================
+# Beckhoff I/O (EL1008 / EL2008 / EL2624 / EL3102 / EL4022)
+# ============================================================================
+
+# --- Digital inputs (EL1008) ---
+net di0  <= lcec.0.di8.din-0
+net di1  <= lcec.0.di8.din-1
+net di2  <= lcec.0.di8.din-2
+net di3  <= lcec.0.di8.din-3
+net di4  <= lcec.0.di8.din-4
+net di5  <= lcec.0.di8.din-5
+net di6  <= lcec.0.di8.din-6
+net di7  <= lcec.0.di8.din-7
+
+# Suggested wiring placeholders (uncomment + set numbers once you know them)
+# net estop-loop-ok  <= lcec.0.di8.din-X
+# net x-home-sw      <= lcec.0.di8.din-X
+# net x-neg-limit    <= lcec.0.di8.din-X
+# net x-pos-limit    <= lcec.0.di8.din-X
+
+# --- Digital outputs (EL2008) ---
+# Safe default: force low on startup
+setp lcec.0.do8.dout-0 0
+setp lcec.0.do8.dout-1 0
+setp lcec.0.do8.dout-2 0
+setp lcec.0.do8.dout-3 0
+setp lcec.0.do8.dout-4 0
+setp lcec.0.do8.dout-5 0
+setp lcec.0.do8.dout-6 0
+setp lcec.0.do8.dout-7 0
+
+# Convenience: DO0 = machine enabled indicator (LED)
+net machine-enabled  iocontrol.0.user-enable-out  => lcec.0.do8.dout-0
+
+# --- Relay outputs (EL2624) ---
+setp lcec.0.relay4.dout-0 0
+setp lcec.0.relay4.dout-1 0
+setp lcec.0.relay4.dout-2 0
+setp lcec.0.relay4.dout-3 0
+
+# Examples (uncomment if desired)
+# net coolant-flood  iocontrol.0.coolant-flood  => lcec.0.relay4.dout-0
+# net coolant-mist   iocontrol.0.coolant-mist   => lcec.0.relay4.dout-1
+
+# --- Analog inputs (EL3102) ---
+net ai0  <= lcec.0.ai2.ain-0-val
+net ai1  <= lcec.0.ai2.ain-1-val
+
+# --- Analog outputs (EL4022, 4-20 mA) ---
+# Safe default: disabled
+setp lcec.0.ao2.aout-0-enable 0
+setp lcec.0.ao2.aout-1-enable 0
+# When ready:
+# setp lcec.0.ao2.aout-0-enable 1
+# net ao0-cmd  some-signal  => lcec.0.ao2.aout-0-value
+
+
+# ============================================================================
+# Drive / Axis wiring (Joint 0 -> A6 via cia402)
+# ============================================================================
+
+# Mode: Cyclic Synchronous Position (CSP, CiA402 mode 8)
+setp cia402.0.csp-mode 1
+
+# Position scale
+# Replace with your actual scaling (counts per machine unit, typically counts/mm).
+# The example value below came from your A61-machine example.
+setp cia402.0.pos-scale 32768
+
+# Motion <-> cia402
+net x-enable        <= joint.0.amp-enable-out  => cia402.0.enable
+net x-amp-fault     => joint.0.amp-fault-in    <= cia402.0.drv-fault
+net x-pos-cmd       <= joint.0.motor-pos-cmd   => cia402.0.pos-cmd
+net x-pos-fb        => joint.0.motor-pos-fb    <= cia402.0.pos-fb
+
+# EtherCAT PDOs -> cia402 (feedback/state)
+net x-statusword       lcec.0.A61.status-word     => cia402.0.statusword
+net x-opmode-display   lcec.0.A61.mode-display    => cia402.0.opmode-display
+net x-drv-act-pos      lcec.0.A61.actual-position => cia402.0.drv-actual-position
+net x-drv-act-vel      lcec.0.A61.actual-velocity => cia402.0.drv-actual-velocity
+
+# cia402 -> EtherCAT PDOs (commands)
+net x-controlword      cia402.0.controlword         => lcec.0.A61.control-word
+net x-opmode           cia402.0.opmode              => lcec.0.A61.control-mode
+net x-drv-target-pos   cia402.0.drv-target-position => lcec.0.A61.target-position
+net x-drv-target-vel   cia402.0.drv-target-velocity => lcec.0.A61.target-velocity
+
+# Optional monitoring
+net x-drv-act-torque   lcec.0.A61.actual-torque
+
+
+# ============================================================================
+# Homing
+# ============================================================================
+
+# Pick ONE approach.
+
+# Option A (recommended initially): LinuxCNC homing using Beckhoff DI
+# - Wire home switch to EL1008
+# - Configure homing in INI (HOME_SEQUENCE, HOME_SEARCH_VEL, etc.)
+# - Net the switch to the joint home input:
+#   net x-home-sw  lcec.0.di8.din-X  => joint.0.home-sw-in
+
+# Option B: CiA402 drive-internal homing (only if home switch is wired to DRIVE)
+# - Requires drive DI mapping parameters set in the drive
+# - Requires INI params [JOINT_0]CIA402_HOMING_* to be defined
+#
+# setp joint.0.request-cia-homing [JOINT_0]CIA402_HOMING_ENABLED
+# setp lcec.0.A6.homing-method [JOINT_0]CIA402_HOMING_METHOD
+# setp lcec.0.A6.homing-high-velocity [JOINT_0]CIA402_HOMING_SEARCH_VELOCITY
+# setp lcec.0.A6.homing-low-velocity [JOINT_0]CIA402_HOMING_LATCH_VELOCITY
+# setp lcec.0.A6.homing-acceleration [JOINT_0]CIA402_HOMING_ACCELERATION
+# net x-start-homing  joint.0.start-cia-homing  => cia402.0.home
